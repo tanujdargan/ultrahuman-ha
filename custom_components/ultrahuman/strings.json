@@ -1,0 +1,93 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Ultrahuman",
+        "description": "Enter your Ultrahuman Partner API key and the email address associated with your Ultrahuman account.",
+        "data": {
+          "api_key": "API Key",
+          "email": "Email"
+        },
+        "data_description": {
+          "api_key": "Your Ultrahuman Partner API authorization token.",
+          "email": "The email address linked to your Ultrahuman account."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid API key or email address.",
+      "cannot_connect": "Unable to connect to the Ultrahuman API.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This Ultrahuman account is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "sleep_score": {
+        "name": "Sleep Score"
+      },
+      "total_sleep": {
+        "name": "Total Sleep"
+      },
+      "sleep_efficiency": {
+        "name": "Sleep Efficiency"
+      },
+      "deep_sleep": {
+        "name": "Deep Sleep"
+      },
+      "rem_sleep": {
+        "name": "REM Sleep"
+      },
+      "light_sleep": {
+        "name": "Light Sleep"
+      },
+      "restorative_sleep": {
+        "name": "Restorative Sleep"
+      },
+      "spo2": {
+        "name": "SpO2"
+      },
+      "heart_rate": {
+        "name": "Heart Rate"
+      },
+      "resting_heart_rate": {
+        "name": "Resting Heart Rate"
+      },
+      "hrv": {
+        "name": "Heart Rate Variability"
+      },
+      "skin_temperature": {
+        "name": "Skin Temperature"
+      },
+      "steps": {
+        "name": "Steps"
+      },
+      "metabolic_score": {
+        "name": "Metabolic Score"
+      },
+      "glucose_variability": {
+        "name": "Glucose Variability"
+      },
+      "average_glucose": {
+        "name": "Average Glucose"
+      },
+      "hba1c": {
+        "name": "HbA1c"
+      },
+      "time_in_target": {
+        "name": "Time in Target"
+      },
+      "recovery_index": {
+        "name": "Recovery Index"
+      },
+      "movement_index": {
+        "name": "Movement Index"
+      },
+      "vo2_max": {
+        "name": "VO2 Max"
+      }
+    }
+  }
+}
