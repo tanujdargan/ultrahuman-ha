@@ -64,6 +64,36 @@ This integration exposes the following sensors from your Ultrahuman Ring:
 3. Enter your **Ultrahuman Partner API key** and the **email address** associated with your Ultrahuman account.
 4. The integration will validate your credentials and set up all available sensors.
 
+## Dashboard Card
+
+The integration includes a custom Lovelace card that displays all your Ultrahuman Ring metrics in a beautiful dark-themed layout with ring-shaped score visualizations.
+
+### Card Features
+
+- SVG ring graphic with animated score arcs for Sleep, Recovery, and Movement
+- Organized sections: Sleep, Heart, Body & Activity, Glucose & Metabolism
+- Built-in refresh button to fetch latest data on demand
+- Responsive design for mobile and desktop
+- Matches Ultrahuman's dark aesthetic and brand colors
+
+### Setup
+
+The card JS resource is auto-registered when the integration loads. If auto-registration doesn't work, add it manually:
+
+1. Go to **Settings** > **Dashboards** > **Resources** (top right menu).
+2. Click **Add Resource**.
+3. Enter URL: `/ultrahuman/ultrahuman-ring-card.js`
+4. Select **JavaScript Module**.
+
+Then add the card to any dashboard:
+
+```yaml
+type: custom:ultrahuman-ring-card
+entity_prefix: sensor.ultrahuman_ring_your_email_com
+```
+
+Replace `entity_prefix` with the common prefix of your sensor entities. Find this in **Developer Tools** > **States** by filtering for `ultrahuman`.
+
 ## Requirements
 
 - An Ultrahuman Ring AIR device
