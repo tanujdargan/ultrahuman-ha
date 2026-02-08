@@ -244,11 +244,12 @@ class UltrahumanRingCard extends HTMLElement {
     const hrv = this._getNumericState("hrv");
 
     // Calculate sleep stage percentages
-    const totalMin = (deep || 0) + (rem || 0) + (light || 0);
+    const noStageData = deep == null && rem == null && light == null;
+    const totalMin = noStageData ? 0 : (deep || 0) + (rem || 0) + (light || 0);
     const deepPct = totalMin > 0 ? Math.round((deep || 0) / totalMin * 100) : 0;
     const remPct = totalMin > 0 ? Math.round((rem || 0) / totalMin * 100) : 0;
     const lightPct = totalMin > 0 ? Math.round((light || 0) / totalMin * 100) : 0;
-    const awakePct = Math.max(0, 100 - deepPct - remPct - lightPct);
+    const awakePct = noStageData ? 0 : Math.max(0, 100 - deepPct - remPct - lightPct);
 
     const scoreColor = this._getScoreColor(score);
     const label = this._getScoreLabel(score);
