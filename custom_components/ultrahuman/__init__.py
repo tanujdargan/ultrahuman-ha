@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -24,10 +25,8 @@ CARD_JS_PATH = Path(__file__).parent / "www" / "ultrahuman-ring-card.js"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the static path for the custom card."""
-    hass.http.register_static_path(
-        CARD_JS_URL,
-        str(CARD_JS_PATH),
-        cache_headers=False,
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(CARD_JS_URL, str(CARD_JS_PATH), False)]
     )
 
     # Register the card as a Lovelace resource
