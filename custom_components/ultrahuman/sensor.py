@@ -261,7 +261,7 @@ SENSOR_DESCRIPTIONS: tuple[UltrahumanSensorEntityDescription, ...] = (
         key="steps",
         translation_key="steps",
         native_unit_of_measurement="steps",
-        state_class=SensorStateClass.TOTAL,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:walk",
         value_fn=_get_steps,
     ),
@@ -367,9 +367,12 @@ class UltrahumanSensor(
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        email = entry.data[CONF_EMAIL]
+        local, domain = email.split("@", 1)
+        masked = f"{local[0]}{'*' * (len(local) - 1)}@{domain}" if local else email
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
-            name=f"Ultrahuman Ring ({entry.data[CONF_EMAIL]})",
+            name=f"Ultrahuman Ring ({masked})",
             manufacturer="Ultrahuman",
             model="Ring AIR",
             entry_type=DeviceEntryType.SERVICE,
