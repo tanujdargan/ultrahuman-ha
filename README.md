@@ -37,9 +37,25 @@ This integration exposes the following sensors from your Ultrahuman Ring:
 - **Movement Index** - Movement/activity score
 - **VO2 Max** - Maximum oxygen uptake (mL/kg/min)
 
-## Data Fetching
+## Data Fetching & History
 
-**No data is stored in Home Assistant.** Data is fetched from the Ultrahuman API only when you explicitly request an update. There is no automatic polling interval. To refresh sensor data, use the `homeassistant.update_entity` service or press the refresh button in the UI.
+Data is automatically fetched from the Ultrahuman API **every 30 minutes**. All sensors support Home Assistant's long-term statistics, so you can track your health metrics over time — just like energy or power usage.
+
+Use the **Statistics Graph** card to visualize trends:
+
+```yaml
+type: statistics-graph
+title: "Health Trends"
+entities:
+  - sensor.ultrahuman_ring_sleep_score
+  - sensor.ultrahuman_ring_hrv
+days_to_show: 30
+period: day
+stat_types:
+  - mean
+```
+
+You can also trigger a manual refresh at any time via the `homeassistant.update_entity` service or the refresh button in the UI.
 
 ## Installation
 

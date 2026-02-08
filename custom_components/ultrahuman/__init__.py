@@ -23,7 +23,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         email=entry.data[CONF_EMAIL],
     )
 
-    coordinator = UltrahumanDataUpdateCoordinator(hass, client)
+    coordinator = UltrahumanDataUpdateCoordinator(hass, client, entry)
 
     # Perform an initial data fetch so sensors have data
     await coordinator.async_config_entry_first_refresh()
