@@ -58,7 +58,7 @@ class UltrahumanApiClient:
             "date": query_date.isoformat(),
         }
         headers = {
-            "Authorization": self._api_key,
+            "Authorization": f"Bearer {self._api_key}",
         }
 
         try:

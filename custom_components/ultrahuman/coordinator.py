@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -15,35 +13,35 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-UPDATE_INTERVAL = timedelta(minutes=30)
-
 
 class UltrahumanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator that fetches data from Ultrahuman API every 30 minutes.
+    """Coordinator that fetches data from Ultrahuman API on demand.
 
-    Automatic polling ensures sensor data is kept fresh and that
-    Home Assistant's long-term statistics can track values over time.
+    No automatic polling interval is set - data is only fetched when
+    the user explicitly requests an update via the homeassistant.update_entity
+    service or the UI refresh button.
     """
 
     def __init__(
         self,
         hass: HomeAssistant,
         client: UltrahumanApiClient,
-        config_entry: ConfigEntry,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            config_entry=config_entry,
-            update_interval=UPDATE_INTERVAL,
-            always_update=False,
+            # No update_interval - only fetch when explicitly requested
+            update_interval=None,
         )
         self.client = client
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from the Ultrahuman API."""
+        """Fetch data from the Ultrahuman API.
+
+        This is called when the user requests a manual update.
+        """
         try:
             response = await self.client.async_get_metrics()
         except UltrahumanAuthError as err:
