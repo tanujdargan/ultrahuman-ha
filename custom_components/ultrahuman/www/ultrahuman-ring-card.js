@@ -280,9 +280,9 @@ class UltrahumanRingCard extends HTMLElement {
 
       <div class="contributors-title">Contributors</div>
       <div class="contributor-grid">
-        ${this._contributorTile(this._formatMinutesPlain(total), "TOTAL SLEEP", score >= 70 ? "Optimal" : score >= 50 ? "Good" : "Low")}
-        ${this._contributorTile(efficiency !== null ? `${efficiency}%` : "--", "EFFICIENCY", efficiency >= 90 ? "Optimal" : efficiency >= 80 ? "Good" : "Low")}
-        ${this._contributorTile(restorative !== null ? `${restorative}%` : "--", "RESTORATIVE SLEEP", restorative >= 35 ? "Good" : "Needs attention")}
+        ${this._contributorTile(this._formatMinutesPlain(total), "TOTAL SLEEP", score === null ? null : score >= 70 ? "Optimal" : score >= 50 ? "Good" : "Low")}
+        ${this._contributorTile(efficiency !== null ? `${efficiency}%` : "--", "EFFICIENCY", efficiency === null ? null : efficiency >= 90 ? "Optimal" : efficiency >= 80 ? "Good" : "Low")}
+        ${this._contributorTile(restorative !== null ? `${restorative}%` : "--", "RESTORATIVE SLEEP", restorative === null ? null : restorative >= 35 ? "Good" : "Needs attention")}
         ${this._contributorTile(rhr !== null ? `${rhr}` : "--", "RESTING HR", null, "bpm")}
       </div>
     </div>
@@ -399,7 +399,7 @@ class UltrahumanRingCard extends HTMLElement {
     const hba1c = this._getNumericState("hba1c");
     const timeInTarget = this._getNumericState("time_in_target");
 
-    const hasData = metabolic || avgGlucose || variability || hba1c || timeInTarget;
+    const hasData = metabolic != null || avgGlucose != null || variability != null || hba1c != null || timeInTarget != null;
 
     return `
     <div class="core-card glucose-card">
@@ -450,11 +450,16 @@ class UltrahumanRingCard extends HTMLElement {
       "hba1c", "time_in_target",
       "recovery_index", "movement_index", "vo2_max",
     ];
+    let foundEntityId = null;
     for (const key of metrics) {
       const entityId = this._getEntityId(key);
       if (this._hass.states[entityId]) {
-        this._hass.callService("homeassistant", "update_entity", { entity_id: entityId });
+        foundEntityId = entityId;
+        break;
       }
+    }
+    if (foundEntityId) {
+      this._hass.callService("homeassistant", "update_entity", { entity_id: foundEntityId });
     }
     const btn = this.shadowRoot.getElementById("refreshBtn");
     if (btn) {
@@ -981,7 +986,7 @@ class UltrahumanRingCardEditor extends HTMLElement {
     `;
     this.shadowRoot.getElementById("prefix").addEventListener("input", (e) => {
       this._config = { ...this._config, entity_prefix: e.target.value };
-      this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config } }));
+      this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true }));
     });
   }
 }

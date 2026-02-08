@@ -368,8 +368,11 @@ class UltrahumanSensor(
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         email = entry.data[CONF_EMAIL]
-        local, domain = email.split("@", 1)
-        masked = f"{local[0]}{'*' * (len(local) - 1)}@{domain}" if local else email
+        local, sep, domain = email.partition("@")
+        if sep and local:
+            masked = f"{local[0]}{'*' * (len(local) - 1)}@{domain}"
+        else:
+            masked = "***"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=f"Ultrahuman Ring ({masked})",
