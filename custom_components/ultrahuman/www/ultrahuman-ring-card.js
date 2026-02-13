@@ -1,15 +1,15 @@
 /**
- * Ultrahuman Ring Card v3 - Custom Lovelace Cards for Home Assistant
- * Faithful recreation of the Ultrahuman app dashboard aesthetic
+ * Ultrahuman Ring Card v4 - Custom Lovelace Cards for Home Assistant
+ * Compact dashboard design with HA theme integration and sparkline graphs
  * Includes: all-in-one card + 6 individual metric cards
  */
 
-const CARD_VERSION = "3.0.0";
+const CARD_VERSION = "4.0.0";
 
 /* ══════════════════════ SVG LOGO ══════════════════════ */
-const UH_LOGO_SVG = `<svg viewBox="0 0 180 16" width="120" height="12" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+const UH_LOGO_SVG = `<svg viewBox="0 0 180 16" width="120" height="12" xmlns="http://www.w3.org/2000/svg">
   <text x="0" y="13" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif"
-    font-size="13" font-weight="800" letter-spacing="3" fill="#999999">ULTRAHUMAN</text>
+    font-size="13" font-weight="800" letter-spacing="3" fill="currentColor">ULTRAHUMAN</text>
 </svg>`;
 
 /* ══════════════════════ UTILITY FUNCTIONS ══════════════════════ */
@@ -31,6 +31,14 @@ function uhGetNumericState(hass, prefix, key) {
 }
 
 function uhGetScoreColor(score) {
+  if (score === null) return "var(--uh-muted)";
+  if (score >= 80) return "var(--uh-green)";
+  if (score >= 60) return "var(--uh-yellow)";
+  if (score >= 40) return "var(--uh-orange)";
+  return "var(--uh-red)";
+}
+
+function uhGetScoreColorRaw(score) {
   if (score === null) return "#46494D";
   if (score >= 80) return "#0EFF27";
   if (score >= 60) return "#FCDD00";
@@ -46,13 +54,6 @@ function uhGetScoreLabel(score) {
   return "Low";
 }
 
-function uhFormatMinutes(mins) {
-  if (mins === null) return "--";
-  const h = Math.floor(mins / 60);
-  const m = Math.round(mins % 60);
-  return `${h}<span class="unit">h</span> ${m}<span class="unit">m</span>`;
-}
-
 function uhFormatMinutesPlain(mins) {
   if (mins === null) return "--";
   const h = Math.floor(mins / 60);
@@ -60,43 +61,87 @@ function uhFormatMinutesPlain(mins) {
   return `${h}h ${m}m`;
 }
 
-function uhContributorTile(value, label, tag, unit) {
-  const tagColor = !tag ? "" : tag === "Optimal" ? "#0EFF27" : tag === "Good" ? "#E3CD77" : "#FF4564";
-  const tagBg = !tag ? "" : tag === "Optimal" ? "rgba(14,255,39,0.12)" : tag === "Good" ? "rgba(227,205,119,0.12)" : "rgba(255,69,100,0.12)";
+/* ══════════════════════ SPARKLINE HELPERS ══════════════════════ */
+
+const UH_HISTORY_CACHE = new Map();
+const UH_HISTORY_TTL = 5 * 60 * 1000;
+
+async function uhFetchHistory(hass, entityId) {
+  const now = Date.now();
+  const cached = UH_HISTORY_CACHE.get(entityId);
+  if (cached && (now - cached.ts) < UH_HISTORY_TTL) return cached.data;
+
+  try {
+    const result = await hass.callWS({
+      type: "history/history_during_period",
+      start_time: new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+      end_time: new Date().toISOString(),
+      entity_ids: [entityId],
+      minimal_response: true,
+      significant_changes_only: true,
+    });
+    const states = result?.[entityId] || [];
+    const points = [];
+    for (const s of states) {
+      const val = parseFloat(s.s);
+      if (!isNaN(val)) {
+        points.push({ t: s.lu, v: val });
+      }
+    }
+    UH_HISTORY_CACHE.set(entityId, { ts: now, data: points });
+    return points;
+  } catch {
+    return [];
+  }
+}
+
+function uhRenderSparklineSVG(points, color) {
+  if (!points || points.length < 2) return "";
+  const vals = points.map(p => p.v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const range = max - min || 1;
+  const w = 300, h = 50;
+  const coords = points.map((p, i) => {
+    const x = (i / (points.length - 1)) * w;
+    const y = h - ((p.v - min) / range) * (h - 4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+
   return `
-  <div class="contributor-tile">
-    <div class="contrib-value">${value}${unit ? `<span class="contrib-unit">${unit}</span>` : ""}</div>
-    <div class="contrib-label">${label}</div>
-    ${tag ? `<div class="contrib-tag" style="color:${tagColor};background:${tagBg}">${tag}</div>` : ""}
+  <svg viewBox="0 0 ${w} ${h}" class="sparkline" preserveAspectRatio="none">
+    <polyline points="${coords}" fill="none" stroke="${color}" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+  </svg>
+  `;
+}
+
+/* ══════════════════════ METRIC ROW BUILDER ══════════════════════ */
+
+function uhMetricRow(label, value, unit, scoreColor, statusLabel, sparklineHtml) {
+  const badge = statusLabel
+    ? `<span class="status-badge" style="color:${scoreColor};background:${scoreColor}22">${statusLabel}</span>`
+    : "";
+  return `
+  <div class="metric-row">
+    <div class="metric-header">
+      <span class="metric-label">${label}</span>
+      <span class="metric-value">${value}${unit ? `<span class="metric-unit"> ${unit}</span>` : ""}${badge}</span>
+    </div>
+    ${sparklineHtml ? `<div class="metric-graph">${sparklineHtml}</div>` : ""}
   </div>
   `;
 }
 
-function uhRecoveryRow(label, value) {
-  return `
-  <div class="recovery-row">
-    <span class="recovery-label">${label}</span>
-    <span class="recovery-value">${value}</span>
-  </div>
-  `;
-}
-
-function uhGlucoseMetric(value, unit, label) {
-  return `
-  <div class="glucose-item">
-    <div class="glucose-val">${value ?? "--"}<span class="glucose-unit">${unit}</span></div>
-    <div class="glucose-label">${label}</div>
-  </div>
-  `;
-}
+/* ══════════════════════ SNAPSHOT PILL ══════════════════════ */
 
 function uhSnapshotPill(iconName, value, unit) {
   const icons = {
-    "thermometer": `<svg viewBox="0 0 24 24" width="18" height="18"><path fill="#888" d="M15 13V5c0-1.66-1.34-3-3-3S9 3.34 9 5v8c-1.21.91-2 2.37-2 4 0 2.76 2.24 5 5 5s5-2.24 5-5c0-1.63-.79-3.09-2-4m-4-8c0-.55.45-1 1-1s1 .45 1 1v3h-2V5z"/></svg>`,
-    "oxygen": `<svg viewBox="0 0 24 24" width="18" height="18"><path fill="#888" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2m0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8m-1-6.5c0 .83-.67 1.5-1.5 1.5S8 14.33 8 13.5v-3C8 9.67 8.67 9 9.5 9s1.5.67 1.5 1.5v3m5.5 0c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5v-3c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v3z"/></svg>`,
-    "shoe-print": `<svg viewBox="0 0 24 24" width="18" height="18"><path fill="#888" d="M13.5 5.5c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2M9.8 8.9 7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3C14.8 12 16.8 13 19 13v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1L6 8.3V13h2V9.6l1.8-.7"/></svg>`,
-    "heart-pulse": `<svg viewBox="0 0 24 24" width="18" height="18"><path fill="#888" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`,
-    "wave": `<svg viewBox="0 0 24 24" width="18" height="18"><path fill="#888" d="M3 12h4l3-9 4 18 3-9h4"/><path fill="none" stroke="#888" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M3 12h4l3-9 4 18 3-9h4"/></svg>`,
+    "thermometer": `<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M15 13V5c0-1.66-1.34-3-3-3S9 3.34 9 5v8c-1.21.91-2 2.37-2 4 0 2.76 2.24 5 5 5s5-2.24 5-5c0-1.63-.79-3.09-2-4m-4-8c0-.55.45-1 1-1s1 .45 1 1v3h-2V5z"/></svg>`,
+    "oxygen": `<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2m0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8m-1-6.5c0 .83-.67 1.5-1.5 1.5S8 14.33 8 13.5v-3C8 9.67 8.67 9 9.5 9s1.5.67 1.5 1.5v3m5.5 0c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5v-3c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v3z"/></svg>`,
+    "shoe-print": `<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M13.5 5.5c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2M9.8 8.9 7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3C14.8 12 16.8 13 19 13v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1L6 8.3V13h2V9.6l1.8-.7"/></svg>`,
+    "heart-pulse": `<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`,
+    "wave": `<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 12h4l3-9 4 18 3-9h4"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M3 12h4l3-9 4 18 3-9h4"/></svg>`,
   };
   return `
   <div class="snapshot-pill">
@@ -107,487 +152,291 @@ function uhSnapshotPill(iconName, value, unit) {
   `;
 }
 
-/* ══════════════════════ COMPOSABLE CSS FUNCTIONS ══════════════════════ */
+/* ══════════════════════ CSS ══════════════════════ */
 
-function uhBaseVariables() {
+function uhStyles() {
   return `
     :host {
-      --bg: #000000;
-      --card-bg-sleep: linear-gradient(165deg, #0A2012 0%, #071A0E 40%, #050F08 100%);
-      --card-bg-movement: linear-gradient(165deg, #0A2012 0%, #071A0E 40%, #050F08 100%);
-      --card-bg-recovery: linear-gradient(165deg, #1A1708 0%, #12100A 40%, #0A0A06 100%);
-      --card-bg-heart: linear-gradient(165deg, #1A0A0A 0%, #120808 40%, #0A0505 100%);
-      --card-bg-glucose: linear-gradient(165deg, #0F0A1A 0%, #0A0812 40%, #06050A 100%);
-      --card-border: rgba(255,255,255,0.06);
-      --pill-bg: #1A1A1A;
-      --text: #FFFFFF;
-      --text-2: #999999;
-      --text-3: #555555;
-      --green: #0EFF27;
+      --uh-card-bg: var(--ha-card-background, var(--card-background-color, #1a1a1a));
+      --uh-text: var(--primary-text-color, #fff);
+      --uh-text-secondary: var(--secondary-text-color, #999);
+      --uh-surface: var(--secondary-background-color, rgba(255,255,255,0.06));
+      --uh-border: var(--divider-color, rgba(255,255,255,0.06));
+      --uh-border-radius: var(--ha-card-border-radius, 12px);
+      --uh-muted: #46494D;
+      --uh-green: #0EFF27;
+      --uh-yellow: #FCDD00;
+      --uh-orange: #FD9400;
+      --uh-red: #FF4500;
     }
-  `;
-}
 
-function uhHaCardBase() {
-  return `
     ha-card {
-      background: var(--bg) !important;
-      border: none !important;
-      border-radius: 0 !important;
+      background: var(--uh-card-bg);
+      border-radius: var(--uh-border-radius);
       overflow: hidden;
-      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      font-family: var(--paper-font-body1_-_font-family, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif);
       -webkit-font-smoothing: antialiased;
+      color: var(--uh-text);
     }
-    .uh-card { padding: 0; }
-  `;
-}
 
-function uhRefreshButtonStyles() {
-  return `
+    .uh-card { padding: 16px; }
+
+    /* ── Header ── */
+    .uh-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .uh-brand {
+      line-height: 0;
+      color: var(--uh-text-secondary);
+    }
     .uh-refresh-btn {
       background: none;
       border: none;
-      color: var(--text-3);
+      color: var(--uh-text-secondary);
       cursor: pointer;
-      padding: 8px;
+      padding: 6px;
       border-radius: 50%;
       display: flex;
       transition: all 0.2s;
     }
-    .uh-refresh-btn:hover { color: var(--green); background: rgba(14,255,39,0.08); }
-    .uh-refresh-btn.spinning svg { animation: spin 1s linear infinite; }
-    @keyframes spin {
+    .uh-refresh-btn:hover { color: var(--uh-green); background: rgba(14,255,39,0.08); }
+    .uh-refresh-btn.spinning svg { animation: uhSpin 1s linear infinite; }
+    @keyframes uhSpin {
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
     }
-  `;
-}
 
-function uhHeaderStyles() {
-  return `
-    .uh-header {
-      padding: 20px 20px 0 20px;
+    /* ── Metric Row ── */
+    .metric-row {
+      background: var(--uh-surface);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
     }
-    .uh-header-top {
+    .metric-row:last-child { margin-bottom: 0; }
+    .metric-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 8px;
     }
-    .uh-brand {
-      line-height: 0;
-      color: var(--text-2);
+    .metric-label {
+      font-size: 0.75em;
+      color: var(--uh-text-secondary);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
-  `;
-}
-
-function uhCoreCardStyles() {
-  return `
-    .core-card {
-      border-radius: 20px;
-      padding: 20px;
-      border: 1px solid var(--card-border);
-    }
-    .sleep-card { background: var(--card-bg-sleep); }
-    .movement-card { background: var(--card-bg-movement); }
-    .recovery-card { background: var(--card-bg-recovery); }
-    .heart-card { background: var(--card-bg-heart); }
-    .glucose-card { background: var(--card-bg-glucose); }
-
-    .card-badge {
-      display: inline-block;
-      font-size: 10px;
+    .metric-value {
+      font-size: 1em;
       font-weight: 700;
-      letter-spacing: 1.5px;
-      color: var(--text);
-      background: rgba(255,255,255,0.08);
-      padding: 5px 12px;
-      border-radius: 8px;
-      margin-bottom: 12px;
-    }
-    .card-score {
-      font-size: 52px;
-      font-weight: 800;
-      line-height: 1;
-      margin-bottom: 4px;
       font-variant-numeric: tabular-nums;
     }
-    .card-subtitle {
-      font-size: 13px;
-      color: var(--text-2);
-      margin-bottom: 8px;
-    }
-    .card-divider {
-      height: 1px;
-      background: var(--card-border);
-      margin: 16px 0;
-    }
-    .unit {
+    .metric-unit {
       font-size: 0.7em;
       font-weight: 400;
-      color: var(--text-2);
+      opacity: 0.7;
     }
-  `;
-}
+    .status-badge {
+      font-size: 0.7em;
+      font-weight: 500;
+      margin-left: 6px;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .metric-graph {
+      margin-top: 6px;
+    }
+    .sparkline {
+      width: 100%;
+      height: 40px;
+      display: block;
+    }
 
-function uhSleepStyles() {
-  return `
-    .sleep-timeline { margin-top: 16px; }
-    .sleep-bar-container { padding: 0 0 10px 0; }
-    .sleep-bar {
-      display: flex;
-      height: 6px;
-      border-radius: 3px;
-      overflow: hidden;
+    /* ── Metric Grid (2-col) ── */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .metric-grid .metric-row {
+      margin-bottom: 0;
+    }
+    .metric-grid .metric-header {
+      flex-direction: column;
+      align-items: flex-start;
       gap: 2px;
     }
-    .bar-segment { border-radius: 3px; min-width: 2px; }
-    .bar-segment.deep { background: #4A6CF7; }
-    .bar-segment.light { background: #0EFF27; }
-    .bar-segment.rem { background: #00CFCF; }
-    .bar-segment.awake { background: #555555; }
+    .metric-grid .metric-value {
+      font-size: 1.1em;
+    }
 
+    /* ── Section ── */
+    .section-gap { margin-top: 12px; }
+
+    /* ── Ring Hero ── */
+    .uh-ring-hero {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 4px 0 12px 0;
+    }
+    .ring-svg { width: 130px; height: 130px; }
+    .arc { transition: stroke-dasharray 0.8s ease-out; }
+    .ring-legend {
+      display: flex;
+      gap: 14px;
+      margin-top: 6px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .legend-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .legend-label {
+      font-size: 0.7em;
+      color: var(--uh-text-secondary);
+      font-weight: 500;
+    }
+
+    /* ── Snapshot ── */
+    .uh-snapshot {
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--uh-border);
+    }
+    .snapshot-title {
+      font-size: 0.85em;
+      font-weight: 600;
+      color: var(--uh-text);
+      margin-bottom: 8px;
+    }
+    .snapshot-row {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      padding-bottom: 2px;
+    }
+    .snapshot-row::-webkit-scrollbar { display: none; }
+    .snapshot-pill {
+      flex: 0 0 auto;
+      min-width: 62px;
+      background: var(--uh-surface);
+      border-radius: 12px;
+      padding: 10px 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .pill-icon {
+      line-height: 0;
+      color: var(--uh-text-secondary);
+    }
+    .pill-value {
+      font-size: 0.9em;
+      font-weight: 700;
+      color: var(--uh-text);
+      font-variant-numeric: tabular-nums;
+    }
+    .pill-unit {
+      font-size: 0.65em;
+      color: var(--uh-text-secondary);
+      font-weight: 500;
+    }
+
+    /* ── Sleep Stage Bar ── */
+    .sleep-bar {
+      display: flex;
+      height: 5px;
+      border-radius: 3px;
+      overflow: hidden;
+      gap: 1px;
+      margin-bottom: 6px;
+    }
+    .bar-seg { border-radius: 3px; min-width: 2px; }
+    .bar-seg.deep { background: #4A6CF7; }
+    .bar-seg.light { background: #0EFF27; }
+    .bar-seg.rem { background: #00CFCF; }
+    .bar-seg.awake { background: #555; }
     .sleep-stages {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px 14px;
+      gap: 4px 10px;
+      margin-bottom: 8px;
     }
     .stage {
       display: flex;
       align-items: center;
-      gap: 5px;
-      font-size: 12px;
-      color: var(--text-2);
+      gap: 4px;
+      font-size: 0.7em;
+      color: var(--uh-text-secondary);
       font-weight: 500;
     }
     .stage-dot {
-      width: 6px;
-      height: 6px;
+      width: 5px;
+      height: 5px;
       border-radius: 50%;
       flex-shrink: 0;
     }
     .stage-dot.deep { background: #4A6CF7; }
     .stage-dot.light { background: #0EFF27; }
     .stage-dot.rem { background: #00CFCF; }
-    .stage-dot.awake { background: #555555; }
+    .stage-dot.awake { background: #555; }
 
-    .contributors-title {
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 12px;
-    }
-    .contributor-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-    .contributor-tile {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--card-border);
-      border-radius: 14px;
-      padding: 14px;
-    }
-    .contrib-value {
-      font-size: 22px;
-      font-weight: 700;
-      color: var(--text);
-      line-height: 1.2;
-      font-variant-numeric: tabular-nums;
-    }
-    .contrib-unit {
-      font-size: 13px;
-      font-weight: 400;
-      color: var(--text-2);
-    }
-    .contrib-label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      color: var(--text-3);
-      margin-top: 4px;
-      text-transform: uppercase;
-    }
-    .contrib-tag {
-      display: inline-block;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 2px 8px;
-      border-radius: 6px;
-      margin-top: 6px;
-    }
-  `;
-}
-
-function uhMovementStyles() {
-  return `
-    .stat-row {
-      display: flex;
-      align-items: center;
-      background: rgba(255,255,255,0.04);
-      border-radius: 14px;
-      padding: 16px;
-      border: 1px solid var(--card-border);
-    }
-    .stat-block {
-      flex: 1;
-      text-align: center;
-    }
-    .stat-value {
-      font-size: 22px;
-      font-weight: 700;
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-    .stat-unit {
-      font-size: 11px;
-      font-weight: 400;
-      color: var(--text-2);
-    }
-    .stat-label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      color: var(--text-3);
-      margin-top: 2px;
-      text-transform: uppercase;
-    }
-    .stat-divider {
-      width: 1px;
-      height: 32px;
-      background: var(--card-border);
-      margin: 0 8px;
-    }
-  `;
-}
-
-function uhRecoveryStyles() {
-  return `
-    .recovery-metrics {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-    }
-    .recovery-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 0;
-      border-bottom: 1px solid var(--card-border);
-    }
-    .recovery-row:last-child { border-bottom: none; }
-    .recovery-label {
-      font-size: 13px;
-      color: var(--text-2);
-    }
-    .recovery-value {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-  `;
-}
-
-function uhHeartStyles() {
-  return `
-    .heart-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 4px;
-    }
-    .heart-metric {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--card-border);
-      border-radius: 14px;
-      padding: 14px;
-    }
-    .heart-val {
-      font-size: 22px;
-      font-weight: 700;
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-    .heart-unit {
-      font-size: 12px;
-      font-weight: 400;
-      color: var(--text-2);
-    }
-    .heart-label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      color: var(--text-3);
-      margin-top: 4px;
-      text-transform: uppercase;
-    }
-  `;
-}
-
-function uhGlucoseStyles() {
-  return `
-    .glucose-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-    .glucose-item {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--card-border);
-      border-radius: 14px;
-      padding: 14px;
-    }
-    .glucose-val {
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-    .glucose-unit {
-      font-size: 11px;
-      font-weight: 400;
-      color: var(--text-2);
-    }
-    .glucose-label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      color: var(--text-3);
-      margin-top: 4px;
-      text-transform: uppercase;
-    }
-    .no-data {
-      font-size: 14px;
-      color: var(--text-3);
-      text-align: center;
-      padding: 20px 0;
-    }
-  `;
-}
-
-function uhSnapshotStyles() {
-  return `
-    .uh-snapshot-section {
-      padding: 0 20px 16px 20px;
-      border-bottom: 1px solid var(--card-border);
-    }
-    .snapshot-title {
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--text);
-      margin-bottom: 12px;
-    }
-    .snapshot-row {
-      display: flex;
-      gap: 8px;
-      overflow-x: auto;
-      scrollbar-width: none;
-      -ms-overflow-style: none;
-      padding-bottom: 4px;
-    }
-    .snapshot-row::-webkit-scrollbar { display: none; }
-
-    .snapshot-pill {
-      flex: 0 0 auto;
-      min-width: 72px;
-      background: var(--pill-bg);
-      border-radius: 16px;
-      padding: 14px 12px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 6px;
-      border: 1px solid var(--card-border);
-    }
-    .pill-icon { line-height: 0; }
-    .pill-value {
-      font-size: 18px;
-      font-weight: 700;
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-    .pill-unit {
-      font-size: 11px;
-      color: var(--text-3);
-      font-weight: 500;
-    }
-  `;
-}
-
-function uhRingHeroStyles() {
-  return `
-    .uh-ring-hero {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 8px 0 16px 0;
-    }
-    .ring-svg { width: 150px; height: 150px; }
-    .arc { transition: stroke-dasharray 0.8s ease-out; }
-
-    .ring-legend {
-      display: flex;
-      gap: 16px;
-      margin-top: 8px;
-    }
-    .legend-item {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
-    .legend-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .legend-label {
-      font-size: 11px;
-      color: var(--text-2);
-      font-weight: 500;
-    }
-  `;
-}
-
-function uhFooterStyles() {
-  return `
+    /* ── Footer ── */
     .uh-footer {
       display: flex;
       justify-content: center;
       align-items: center;
-      gap: 8px;
-      padding: 16px 20px 20px 20px;
+      gap: 6px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--uh-border);
     }
-    .footer-ring-icon { line-height: 0; }
+    .footer-icon {
+      line-height: 0;
+      color: var(--uh-text-secondary);
+    }
     .footer-text {
-      font-size: 10px;
-      letter-spacing: 2px;
-      color: var(--text-3);
+      font-size: 0.6em;
+      letter-spacing: 1.5px;
+      color: var(--uh-text-secondary);
       text-transform: uppercase;
       font-weight: 500;
     }
-  `;
-}
 
-function uhResponsiveStyles() {
-  return `
+    /* ── No Data ── */
+    .no-data {
+      font-size: 0.85em;
+      color: var(--uh-text-secondary);
+      text-align: center;
+      padding: 16px 0;
+    }
+
+    /* ── Responsive ── */
     @media (max-width: 360px) {
-      .contributor-grid,
-      .heart-grid,
-      .glucose-grid {
-        grid-template-columns: 1fr;
-      }
+      .metric-grid { grid-template-columns: 1fr; }
       .ring-legend {
         flex-direction: column;
-        gap: 4px;
+        gap: 3px;
         align-items: center;
       }
     }
   `;
 }
 
-/* ══════════════════════ SHARED RENDER HELPERS ══════════════════════ */
+/* ══════════════════════ RENDER HELPERS ══════════════════════ */
 
 function uhRenderRingSVG(hass, prefix) {
   const sleep = uhGetNumericState(hass, prefix, "sleep_score");
@@ -608,40 +457,30 @@ function uhRenderRingSVG(hass, prefix) {
         <stop offset="50%" stop-color="#1A1C1B"/>
         <stop offset="100%" stop-color="#2E3230"/>
       </linearGradient>
-      <filter id="rs"><feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="#000" flood-opacity="0.6"/></filter>
+      <filter id="rs"><feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/></filter>
       <filter id="ag"><feGaussianBlur stdDeviation="1.5" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
     </defs>
-
-    <!-- Ring body -->
     <circle cx="100" cy="100" r="80" fill="none" stroke="url(#rg1)" stroke-width="22" filter="url(#rs)" opacity="0.35"/>
-
-    <!-- Track backgrounds -->
     <circle cx="100" cy="100" r="${r1}" fill="none" stroke="#1A1C1B" stroke-width="6"/>
     <circle cx="100" cy="100" r="${r2}" fill="none" stroke="#1A1C1B" stroke-width="6"/>
     <circle cx="100" cy="100" r="${r3}" fill="none" stroke="#1A1C1B" stroke-width="6"/>
-
-    <!-- Score arcs -->
     <circle cx="100" cy="100" r="${r1}" fill="none"
-      stroke="${uhGetScoreColor(sleep)}" stroke-width="6" stroke-linecap="round"
+      stroke="${uhGetScoreColorRaw(sleep)}" stroke-width="6" stroke-linecap="round"
       stroke-dasharray="${d1} ${c1}" transform="rotate(-90 100 100)" filter="url(#ag)" class="arc"/>
     <circle cx="100" cy="100" r="${r2}" fill="none"
-      stroke="${uhGetScoreColor(recovery)}" stroke-width="6" stroke-linecap="round"
+      stroke="${uhGetScoreColorRaw(recovery)}" stroke-width="6" stroke-linecap="round"
       stroke-dasharray="${d2} ${c2}" transform="rotate(-90 100 100)" filter="url(#ag)" class="arc"/>
     <circle cx="100" cy="100" r="${r3}" fill="none"
-      stroke="${uhGetScoreColor(movement)}" stroke-width="6" stroke-linecap="round"
+      stroke="${uhGetScoreColorRaw(movement)}" stroke-width="6" stroke-linecap="round"
       stroke-dasharray="${d3} ${c3}" transform="rotate(-90 100 100)" filter="url(#ag)" class="arc"/>
-
-    <!-- Inner surface -->
     <circle cx="100" cy="100" r="52" fill="#0A0A0A"/>
-
-    <!-- Ring icon -->
     <path d="M100 78 C108 78 114 84 114 92 L114 108 C114 116 108 122 100 122 C92 122 86 116 86 108 L86 92 C86 84 92 78 100 78Z" fill="none" stroke="#3A3A3A" stroke-width="1.5"/>
     <circle cx="100" cy="88" r="3" fill="#3A3A3A"/>
   </svg>
   <div class="ring-legend">
-    <div class="legend-item"><span class="legend-dot" style="background:${uhGetScoreColor(sleep)}"></span><span class="legend-label">Sleep ${sleep ?? "--"}</span></div>
-    <div class="legend-item"><span class="legend-dot" style="background:${uhGetScoreColor(recovery)}"></span><span class="legend-label">Recovery ${recovery ?? "--"}</span></div>
-    <div class="legend-item"><span class="legend-dot" style="background:${uhGetScoreColor(movement)}"></span><span class="legend-label">Movement ${movement ?? "--"}</span></div>
+    <div class="legend-item"><span class="legend-dot" style="background:${uhGetScoreColorRaw(sleep)}"></span><span class="legend-label">Sleep ${sleep ?? "--"}</span></div>
+    <div class="legend-item"><span class="legend-dot" style="background:${uhGetScoreColorRaw(recovery)}"></span><span class="legend-label">Recovery ${recovery ?? "--"}</span></div>
+    <div class="legend-item"><span class="legend-dot" style="background:${uhGetScoreColorRaw(movement)}"></span><span class="legend-label">Movement ${movement ?? "--"}</span></div>
   </div>
   `;
 }
@@ -656,7 +495,7 @@ function uhRenderSnapshot(hass, prefix) {
   return `
   <div class="snapshot-title">Snapshot</div>
   <div class="snapshot-row">
-    ${uhSnapshotPill("thermometer", temp !== null ? parseFloat(temp).toFixed(1) : "--", "°C")}
+    ${uhSnapshotPill("thermometer", temp !== null ? parseFloat(temp).toFixed(1) : "--", "\u00B0C")}
     ${uhSnapshotPill("oxygen", spo2 ?? "--", "%")}
     ${uhSnapshotPill("shoe-print", steps !== null ? Math.round(steps).toLocaleString() : "--", "steps")}
     ${uhSnapshotPill("heart-pulse", hr ?? "--", "bpm")}
@@ -665,171 +504,12 @@ function uhRenderSnapshot(hass, prefix) {
   `;
 }
 
-function uhRenderSleepContent(hass, prefix) {
-  const score = uhGetNumericState(hass, prefix, "sleep_score");
-  const total = uhGetNumericState(hass, prefix, "total_sleep");
-  const efficiency = uhGetNumericState(hass, prefix, "sleep_efficiency");
-  const deep = uhGetNumericState(hass, prefix, "deep_sleep");
-  const rem = uhGetNumericState(hass, prefix, "rem_sleep");
-  const light = uhGetNumericState(hass, prefix, "light_sleep");
-  const restorative = uhGetNumericState(hass, prefix, "restorative_sleep");
-  const rhr = uhGetNumericState(hass, prefix, "resting_heart_rate");
-
-  const noStageData = deep == null && rem == null && light == null;
-  const totalMin = noStageData ? 0 : (deep || 0) + (rem || 0) + (light || 0);
-  const deepPct = totalMin > 0 ? Math.round((deep || 0) / totalMin * 100) : 0;
-  const remPct = totalMin > 0 ? Math.round((rem || 0) / totalMin * 100) : 0;
-  const lightPct = totalMin > 0 ? Math.round((light || 0) / totalMin * 100) : 0;
-  const awakePct = noStageData ? 0 : Math.max(0, 100 - deepPct - remPct - lightPct);
-
-  const scoreColor = uhGetScoreColor(score);
-  const label = uhGetScoreLabel(score);
-
-  return `
-  <div class="core-card sleep-card">
-    <div class="card-badge">SLEEP</div>
-    <div class="card-score" style="color:${scoreColor}">${score ?? "--"}</div>
-    <div class="card-subtitle">${label ? `${label}` : ""}</div>
-
-    <div class="sleep-timeline">
-      <div class="sleep-bar-container">
-        <div class="sleep-bar">
-          <div class="bar-segment deep" style="width:${deepPct}%"></div>
-          <div class="bar-segment light" style="width:${lightPct}%"></div>
-          <div class="bar-segment rem" style="width:${remPct}%"></div>
-          <div class="bar-segment awake" style="width:${awakePct}%"></div>
-        </div>
-      </div>
-      <div class="sleep-stages">
-        <span class="stage"><span class="stage-dot deep"></span>Deep &middot; ${deepPct}%</span>
-        <span class="stage"><span class="stage-dot light"></span>Light &middot; ${lightPct}%</span>
-        <span class="stage"><span class="stage-dot rem"></span>REM &middot; ${remPct}%</span>
-        <span class="stage"><span class="stage-dot awake"></span>Awake &middot; ${awakePct}%</span>
-      </div>
-    </div>
-
-    <div class="card-divider"></div>
-
-    <div class="contributors-title">Contributors</div>
-    <div class="contributor-grid">
-      ${uhContributorTile(uhFormatMinutesPlain(total), "TOTAL SLEEP", score === null ? null : score >= 70 ? "Optimal" : score >= 50 ? "Good" : "Low")}
-      ${uhContributorTile(efficiency !== null ? `${efficiency}%` : "--", "EFFICIENCY", efficiency === null ? null : efficiency >= 90 ? "Optimal" : efficiency >= 80 ? "Good" : "Low")}
-      ${uhContributorTile(restorative !== null ? `${restorative}%` : "--", "RESTORATIVE SLEEP", restorative === null ? null : restorative >= 35 ? "Good" : "Needs attention")}
-      ${uhContributorTile(rhr !== null ? `${rhr}` : "--", "RESTING HR", null, "bpm")}
-    </div>
-  </div>
-  `;
-}
-
-function uhRenderMovementContent(hass, prefix) {
-  const score = uhGetNumericState(hass, prefix, "movement_index");
-  const steps = uhGetNumericState(hass, prefix, "steps");
-  const vo2 = uhGetNumericState(hass, prefix, "vo2_max");
-  const scoreColor = uhGetScoreColor(score);
-
-  return `
-  <div class="core-card movement-card">
-    <div class="card-badge">MOVEMENT</div>
-    <div class="card-score" style="color:${scoreColor}">${score ?? "--"}</div>
-    <div class="card-divider"></div>
-    <div class="stat-row">
-      <div class="stat-block">
-        <div class="stat-value">${steps !== null ? Math.round(steps).toLocaleString() : "--"}</div>
-        <div class="stat-label">TOTAL STEPS</div>
-      </div>
-      <div class="stat-divider"></div>
-      <div class="stat-block">
-        <div class="stat-value">${vo2 ?? "--"}<span class="stat-unit"> mL/kg/min</span></div>
-        <div class="stat-label">VO2 MAX</div>
-      </div>
-    </div>
-  </div>
-  `;
-}
-
-function uhRenderRecoveryContent(hass, prefix) {
-  const score = uhGetNumericState(hass, prefix, "recovery_index");
-  const hrv = uhGetNumericState(hass, prefix, "hrv");
-  const rhr = uhGetNumericState(hass, prefix, "resting_heart_rate");
-  const temp = uhGetNumericState(hass, prefix, "skin_temperature");
-  const scoreColor = uhGetScoreColor(score);
-
-  return `
-  <div class="core-card recovery-card">
-    <div class="card-badge">DYNAMIC RECOVERY</div>
-    <div class="card-score" style="color:${scoreColor}">${score ?? "--"}</div>
-    <div class="card-divider"></div>
-    <div class="recovery-metrics">
-      ${uhRecoveryRow("HRV Average", hrv !== null ? `${hrv} ms` : "--")}
-      ${uhRecoveryRow("Resting Heart Rate", rhr !== null ? `${rhr} bpm` : "--")}
-      ${uhRecoveryRow("Skin Temperature", temp !== null ? `${parseFloat(temp).toFixed(1)}°C` : "--")}
-    </div>
-  </div>
-  `;
-}
-
-function uhRenderHeartContent(hass, prefix) {
-  const hr = uhGetNumericState(hass, prefix, "heart_rate");
-  const rhr = uhGetNumericState(hass, prefix, "resting_heart_rate");
-  const hrv = uhGetNumericState(hass, prefix, "hrv");
-  const spo2 = uhGetNumericState(hass, prefix, "spo2");
-
-  return `
-  <div class="core-card heart-card">
-    <div class="card-badge">HEART</div>
-    <div class="heart-grid">
-      <div class="heart-metric">
-        <div class="heart-val">${hr ?? "--"}<span class="heart-unit"> bpm</span></div>
-        <div class="heart-label">HEART RATE</div>
-      </div>
-      <div class="heart-metric">
-        <div class="heart-val">${rhr ?? "--"}<span class="heart-unit"> bpm</span></div>
-        <div class="heart-label">RESTING HR</div>
-      </div>
-      <div class="heart-metric">
-        <div class="heart-val">${hrv ?? "--"}<span class="heart-unit"> ms</span></div>
-        <div class="heart-label">HRV</div>
-      </div>
-      <div class="heart-metric">
-        <div class="heart-val">${spo2 ?? "--"}<span class="heart-unit">%</span></div>
-        <div class="heart-label">SpO2</div>
-      </div>
-    </div>
-  </div>
-  `;
-}
-
-function uhRenderGlucoseContent(hass, prefix) {
-  const metabolic = uhGetNumericState(hass, prefix, "metabolic_score");
-  const avgGlucose = uhGetNumericState(hass, prefix, "average_glucose");
-  const variability = uhGetNumericState(hass, prefix, "glucose_variability");
-  const hba1c = uhGetNumericState(hass, prefix, "hba1c");
-  const timeInTarget = uhGetNumericState(hass, prefix, "time_in_target");
-
-  const hasData = metabolic != null || avgGlucose != null || variability != null || hba1c != null || timeInTarget != null;
-
-  return `
-  <div class="core-card glucose-card">
-    <div class="card-badge">GLUCOSE &amp; METABOLISM</div>
-    ${!hasData ? `<div class="no-data">No glucose data available</div>` : `
-      ${metabolic !== null ? `<div class="card-score" style="color:${uhGetScoreColor(metabolic)}">${metabolic}</div><div class="card-subtitle">Metabolic Score</div><div class="card-divider"></div>` : ""}
-      <div class="glucose-grid">
-        ${uhGlucoseMetric(avgGlucose, "mg/dL", "AVG GLUCOSE")}
-        ${uhGlucoseMetric(variability, "%", "VARIABILITY")}
-        ${uhGlucoseMetric(hba1c, "%", "HbA1c")}
-        ${uhGlucoseMetric(timeInTarget, "%", "IN TARGET")}
-      </div>
-    `}
-  </div>
-  `;
-}
-
 function uhRenderFooter() {
   return `
   <div class="uh-footer">
-    <div class="footer-ring-icon">
-      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 4C14.2 4 16 5.8 16 8L16 16C16 18.2 14.2 20 12 20C9.8 20 8 18.2 8 16L8 8C8 5.8 9.8 4 12 4Z" fill="none" stroke="#555" stroke-width="1.5"/><circle cx="12" cy="7" r="1.5" fill="#555"/></svg>
-    </div>
+    <span class="footer-icon">
+      <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 4C14.2 4 16 5.8 16 8L16 16C16 18.2 14.2 20 12 20C9.8 20 8 18.2 8 16L8 8C8 5.8 9.8 4 12 4Z" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="7" r="1.5" fill="currentColor"/></svg>
+    </span>
     <span class="footer-text">Ultrahuman Ring AIR</span>
   </div>
   `;
@@ -842,10 +522,17 @@ class UltrahumanCardBase extends HTMLElement {
     return { hass: {}, config: {} };
   }
 
+  constructor() {
+    super();
+    this._sparklines = {};
+    this._sparklinesPending = false;
+  }
+
   set hass(hass) {
     this._hass = hass;
     if (this._initialized) {
       this._updateValues();
+      this._loadSparklines();
     }
   }
 
@@ -857,29 +544,29 @@ class UltrahumanCardBase extends HTMLElement {
     this._initialized = false;
     this._render();
     this._initialized = true;
+    this._loadSparklines();
   }
 
   get _prefix() {
     return this._config.entity_prefix;
   }
 
-  _renderCardHeader() {
+  _renderHeader() {
     return `
     <div class="uh-header">
-      <div class="uh-header-top">
-        <span class="uh-brand">${UH_LOGO_SVG}</span>
-        <button class="uh-refresh-btn" id="refreshBtn" title="Refresh data">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-        </button>
-      </div>
+      <span class="uh-brand">${UH_LOGO_SVG}</span>
+      <button class="uh-refresh-btn" id="refreshBtn" title="Refresh data">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+      </button>
     </div>
     `;
   }
 
   _attachRefreshHandler() {
-    this.shadowRoot.getElementById("refreshBtn")?.addEventListener("click", () => {
-      this._refreshData();
-    });
+    const btn = this.shadowRoot ? this.shadowRoot.getElementById("refreshBtn") : null;
+    if (btn) {
+      btn.addEventListener("click", () => { this._refreshData(); });
+    }
   }
 
   _refreshData() {
@@ -896,10 +583,16 @@ class UltrahumanCardBase extends HTMLElement {
     if (foundEntityId) {
       this._hass.callService("homeassistant", "update_entity", { entity_id: foundEntityId });
     }
-    const btn = this.shadowRoot.getElementById("refreshBtn");
+    for (const key of metrics) {
+      UH_HISTORY_CACHE.delete(`${this._prefix}_${key}`);
+    }
+    const btn = this.shadowRoot ? this.shadowRoot.getElementById("refreshBtn") : null;
     if (btn) {
       btn.classList.add("spinning");
-      setTimeout(() => btn.classList.remove("spinning"), 1500);
+      setTimeout(() => {
+        btn.classList.remove("spinning");
+        this._loadSparklines();
+      }, 1500);
     }
   }
 
@@ -915,175 +608,187 @@ class UltrahumanCardBase extends HTMLElement {
     ];
   }
 
-  /* Subclasses override _render() and _updateValues() */
+  _getSparklineEntities() {
+    return [];
+  }
+
+  async _loadSparklines() {
+    if (!this._hass || this._sparklinesPending) return;
+    const entities = this._getSparklineEntities();
+    if (entities.length === 0) return;
+    this._sparklinesPending = true;
+    try {
+      const results = await Promise.all(
+        entities.map(key => uhFetchHistory(this._hass, `${this._prefix}_${key}`))
+      );
+      let changed = false;
+      entities.forEach((key, i) => {
+        const old = this._sparklines[key];
+        const nw = results[i];
+        if (!old || old.length !== nw.length || (nw.length > 0 && old[old.length-1]?.v !== nw[nw.length-1]?.v)) {
+          this._sparklines[key] = nw;
+          changed = true;
+        }
+      });
+      if (changed) this._updateSparklines();
+    } finally {
+      this._sparklinesPending = false;
+    }
+  }
+
+  _getSparklineHtml(key, color) {
+    return uhRenderSparklineSVG(this._sparklines[key], color);
+  }
+
   _render() {}
   _updateValues() {}
+  _updateSparklines() { this._updateValues(); }
 }
 
-/* ══════════════════════ ORIGINAL ALL-IN-ONE CARD ══════════════════════ */
+/* ══════════════════════ ALL-IN-ONE CARD ══════════════════════ */
 
 class UltrahumanRingCard extends UltrahumanCardBase {
-  static getConfigElement() {
-    return document.createElement("ultrahuman-ring-card-editor");
-  }
+  static getConfigElement() { return document.createElement("ultrahuman-ring-card-editor"); }
+  static getStubConfig() { return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" }; }
+  getCardSize() { return 10; }
 
-  static getStubConfig() {
-    return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" };
-  }
-
-  getCardSize() {
-    return 12;
+  _getSparklineEntities() {
+    return ["sleep_score", "movement_index", "recovery_index", "heart_rate", "metabolic_score"];
   }
 
   _render() {
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
-
-    this.shadowRoot.innerHTML = `
-      <ha-card>
-        <style>${this._getStyles()}</style>
-        <div class="uh-card">
-          ${this._renderHeader()}
-          <div class="uh-snapshot-section" id="snapshotSection">
-            ${uhRenderSnapshot(this._hass, this._prefix)}
-          </div>
-          <div class="uh-core-title">Core Metrics</div>
-          <div class="uh-body">
-            <div id="sleepCard">${uhRenderSleepContent(this._hass, this._prefix)}</div>
-            <div id="movementCard">${uhRenderMovementContent(this._hass, this._prefix)}</div>
-            <div id="recoveryCard">${uhRenderRecoveryContent(this._hass, this._prefix)}</div>
-            <div id="heartCard">${uhRenderHeartContent(this._hass, this._prefix)}</div>
-            <div id="glucoseCard">${uhRenderGlucoseContent(this._hass, this._prefix)}</div>
-          </div>
-          ${uhRenderFooter()}
-        </div>
-      </ha-card>
-    `;
-
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const root = this.shadowRoot;
+    root.textContent = "";
+    const card = document.createElement("ha-card");
+    const style = document.createElement("style");
+    style.textContent = uhStyles();
+    card.appendChild(style);
+    const container = document.createElement("div");
+    container.className = "uh-card";
+    container.id = "uhRoot";
+    card.appendChild(container);
+    root.appendChild(card);
+    this._rebuildContent();
     this._attachRefreshHandler();
   }
 
-  _renderHeader() {
-    return `
-    <div class="uh-header">
-      <div class="uh-header-top">
-        <span class="uh-brand">${UH_LOGO_SVG}</span>
-        <button class="uh-refresh-btn" id="refreshBtn" title="Refresh data">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-        </button>
-      </div>
-      <div class="uh-ring-hero" id="ringHero">
-        ${uhRenderRingSVG(this._hass, this._prefix)}
-      </div>
-    </div>
-    `;
+  _rebuildContent() {
+    const container = this.shadowRoot ? this.shadowRoot.getElementById("uhRoot") : null;
+    if (!container) return;
+    container.textContent = "";
+
+    // Header
+    const headerDiv = document.createElement("div");
+    headerDiv.innerHTML = this._renderHeader();
+    while (headerDiv.firstChild) container.appendChild(headerDiv.firstChild);
+
+    // Ring hero
+    const ringDiv = document.createElement("div");
+    ringDiv.className = "uh-ring-hero";
+    ringDiv.id = "ringHero";
+    ringDiv.innerHTML = uhRenderRingSVG(this._hass, this._prefix);
+    container.appendChild(ringDiv);
+
+    // Snapshot
+    const snapDiv = document.createElement("div");
+    snapDiv.className = "uh-snapshot";
+    snapDiv.id = "snapshot";
+    snapDiv.innerHTML = uhRenderSnapshot(this._hass, this._prefix);
+    container.appendChild(snapDiv);
+
+    // Metrics
+    const metricsDiv = document.createElement("div");
+    metricsDiv.id = "metricsArea";
+    metricsDiv.innerHTML = this._renderMetrics();
+    container.appendChild(metricsDiv);
+
+    // Footer
+    const footerDiv = document.createElement("div");
+    footerDiv.innerHTML = uhRenderFooter();
+    while (footerDiv.firstChild) container.appendChild(footerDiv.firstChild);
+  }
+
+  _renderMetrics() {
+    const h = this._hass, p = this._prefix;
+    const sleep = uhGetNumericState(h, p, "sleep_score");
+    const movement = uhGetNumericState(h, p, "movement_index");
+    const recovery = uhGetNumericState(h, p, "recovery_index");
+    const hr = uhGetNumericState(h, p, "heart_rate");
+    const rhr = uhGetNumericState(h, p, "resting_heart_rate");
+    const hrv = uhGetNumericState(h, p, "hrv");
+    const spo2 = uhGetNumericState(h, p, "spo2");
+    const metabolic = uhGetNumericState(h, p, "metabolic_score");
+
+    return [
+      uhMetricRow("SLEEP SCORE", sleep ?? "--", "", uhGetScoreColorRaw(sleep), uhGetScoreLabel(sleep), this._getSparklineHtml("sleep_score", uhGetScoreColorRaw(sleep))),
+      uhMetricRow("MOVEMENT", movement ?? "--", "", uhGetScoreColorRaw(movement), uhGetScoreLabel(movement), this._getSparklineHtml("movement_index", uhGetScoreColorRaw(movement))),
+      uhMetricRow("RECOVERY", recovery ?? "--", "", uhGetScoreColorRaw(recovery), uhGetScoreLabel(recovery), this._getSparklineHtml("recovery_index", uhGetScoreColorRaw(recovery))),
+      uhMetricRow("HEART RATE", hr ?? "--", "bpm", uhGetScoreColorRaw(null), "", this._getSparklineHtml("heart_rate", "var(--uh-text-secondary)")),
+      `<div class="metric-grid">`,
+      uhMetricRow("RESTING HR", rhr ?? "--", "bpm", "", "", ""),
+      uhMetricRow("HRV", hrv ?? "--", "ms", "", "", ""),
+      uhMetricRow("SpO2", spo2 ?? "--", "%", "", "", ""),
+      uhMetricRow("METABOLIC", metabolic ?? "--", "", uhGetScoreColorRaw(metabolic), uhGetScoreLabel(metabolic), ""),
+      `</div>`,
+    ].join("");
   }
 
   _updateValues() {
     if (!this.shadowRoot || !this._hass) return;
     const ring = this.shadowRoot.getElementById("ringHero");
     if (ring) ring.innerHTML = uhRenderRingSVG(this._hass, this._prefix);
-    const snap = this.shadowRoot.getElementById("snapshotSection");
+    const snap = this.shadowRoot.getElementById("snapshot");
     if (snap) snap.innerHTML = uhRenderSnapshot(this._hass, this._prefix);
-    const ids = ["sleepCard", "movementCard", "recoveryCard", "heartCard", "glucoseCard"];
-    const renderers = [
-      () => uhRenderSleepContent(this._hass, this._prefix),
-      () => uhRenderMovementContent(this._hass, this._prefix),
-      () => uhRenderRecoveryContent(this._hass, this._prefix),
-      () => uhRenderHeartContent(this._hass, this._prefix),
-      () => uhRenderGlucoseContent(this._hass, this._prefix),
-    ];
-    ids.forEach((id, i) => {
-      const el = this.shadowRoot.getElementById(id);
-      if (el) el.innerHTML = renderers[i]();
-    });
-  }
-
-  _getStyles() {
-    return [
-      uhBaseVariables(),
-      uhHaCardBase(),
-      uhRefreshButtonStyles(),
-      uhHeaderStyles(),
-      uhRingHeroStyles(),
-      uhSnapshotStyles(),
-      uhCoreCardStyles(),
-      uhSleepStyles(),
-      uhMovementStyles(),
-      uhRecoveryStyles(),
-      uhHeartStyles(),
-      uhGlucoseStyles(),
-      uhFooterStyles(),
-      uhResponsiveStyles(),
-      `
-        .uh-core-title {
-          font-size: 22px;
-          font-weight: 700;
-          color: var(--text);
-          padding: 20px 20px 12px 20px;
-        }
-        .uh-body {
-          padding: 0 12px 12px 12px;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-      `,
-    ].join("\n");
+    const metrics = this.shadowRoot.getElementById("metricsArea");
+    if (metrics) metrics.innerHTML = this._renderMetrics();
   }
 }
 
-/* ══════════════════════ OVERVIEW CARD (Ring SVG + Snapshot) ══════════════════════ */
+/* ══════════════════════ OVERVIEW CARD ══════════════════════ */
 
 class UltrahumanRingOverviewCard extends UltrahumanCardBase {
-  static getConfigElement() {
-    return document.createElement("ultrahuman-ring-overview-card-editor");
-  }
-
-  static getStubConfig() {
-    return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" };
-  }
-
-  getCardSize() {
-    return 5;
-  }
+  static getConfigElement() { return document.createElement("ultrahuman-ring-overview-card-editor"); }
+  static getStubConfig() { return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" }; }
+  getCardSize() { return 5; }
 
   _getRefreshMetrics() {
-    return [
-      "sleep_score", "recovery_index", "movement_index",
-      "skin_temperature", "spo2", "steps", "heart_rate", "hrv",
-    ];
+    return ["sleep_score", "recovery_index", "movement_index", "skin_temperature", "spo2", "steps", "heart_rate", "hrv"];
   }
 
   _render() {
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const root = this.shadowRoot;
+    root.textContent = "";
+    const card = document.createElement("ha-card");
+    const style = document.createElement("style");
+    style.textContent = uhStyles();
+    card.appendChild(style);
+    const container = document.createElement("div");
+    container.className = "uh-card";
+    card.appendChild(container);
 
-    this.shadowRoot.innerHTML = `
-      <ha-card>
-        <style>${this._getStyles()}</style>
-        <div class="uh-card">
-          <div class="uh-header">
-            <div class="uh-header-top">
-              <span class="uh-brand">${UH_LOGO_SVG}</span>
-              <button class="uh-refresh-btn" id="refreshBtn" title="Refresh data">
-                <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-              </button>
-            </div>
-            <div class="uh-ring-hero" id="ringHero">
-              ${uhRenderRingSVG(this._hass, this._prefix)}
-            </div>
-          </div>
-          <div class="uh-snapshot-section" id="snapshotSection">
-            ${uhRenderSnapshot(this._hass, this._prefix)}
-          </div>
-          ${uhRenderFooter()}
-        </div>
-      </ha-card>
-    `;
+    const headerDiv = document.createElement("div");
+    headerDiv.innerHTML = this._renderHeader();
+    while (headerDiv.firstChild) container.appendChild(headerDiv.firstChild);
 
+    const ringDiv = document.createElement("div");
+    ringDiv.className = "uh-ring-hero";
+    ringDiv.id = "ringHero";
+    ringDiv.innerHTML = uhRenderRingSVG(this._hass, this._prefix);
+    container.appendChild(ringDiv);
+
+    const snapDiv = document.createElement("div");
+    snapDiv.className = "uh-snapshot";
+    snapDiv.id = "snapshot";
+    snapDiv.innerHTML = uhRenderSnapshot(this._hass, this._prefix);
+    container.appendChild(snapDiv);
+
+    const footerDiv = document.createElement("div");
+    footerDiv.innerHTML = uhRenderFooter();
+    while (footerDiv.firstChild) container.appendChild(footerDiv.firstChild);
+
+    root.appendChild(card);
     this._attachRefreshHandler();
   }
 
@@ -1091,322 +796,320 @@ class UltrahumanRingOverviewCard extends UltrahumanCardBase {
     if (!this.shadowRoot || !this._hass) return;
     const ring = this.shadowRoot.getElementById("ringHero");
     if (ring) ring.innerHTML = uhRenderRingSVG(this._hass, this._prefix);
-    const snap = this.shadowRoot.getElementById("snapshotSection");
+    const snap = this.shadowRoot.getElementById("snapshot");
     if (snap) snap.innerHTML = uhRenderSnapshot(this._hass, this._prefix);
-  }
-
-  _getStyles() {
-    return [
-      uhBaseVariables(),
-      uhHaCardBase(),
-      uhRefreshButtonStyles(),
-      uhHeaderStyles(),
-      uhRingHeroStyles(),
-      uhSnapshotStyles(),
-      uhFooterStyles(),
-      uhResponsiveStyles(),
-    ].join("\n");
   }
 }
 
 /* ══════════════════════ SLEEP CARD ══════════════════════ */
 
 class UltrahumanRingSleepCard extends UltrahumanCardBase {
-  static getConfigElement() {
-    return document.createElement("ultrahuman-ring-sleep-card-editor");
-  }
-
-  static getStubConfig() {
-    return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" };
-  }
-
-  getCardSize() {
-    return 5;
-  }
+  static getConfigElement() { return document.createElement("ultrahuman-ring-sleep-card-editor"); }
+  static getStubConfig() { return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" }; }
+  getCardSize() { return 5; }
 
   _getRefreshMetrics() {
-    return [
-      "sleep_score", "total_sleep", "sleep_efficiency",
-      "deep_sleep", "rem_sleep", "light_sleep",
-      "restorative_sleep", "resting_heart_rate",
-    ];
+    return ["sleep_score", "total_sleep", "sleep_efficiency", "deep_sleep", "rem_sleep", "light_sleep", "restorative_sleep", "resting_heart_rate"];
   }
+  _getSparklineEntities() { return ["sleep_score", "total_sleep", "sleep_efficiency"]; }
 
   _render() {
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const root = this.shadowRoot;
+    root.textContent = "";
+    const card = document.createElement("ha-card");
+    const style = document.createElement("style");
+    style.textContent = uhStyles();
+    card.appendChild(style);
+    const container = document.createElement("div");
+    container.className = "uh-card";
+    card.appendChild(container);
 
-    this.shadowRoot.innerHTML = `
-      <ha-card>
-        <style>${this._getStyles()}</style>
-        <div class="uh-card">
-          ${this._renderCardHeader()}
-          <div class="uh-body" id="contentArea">
-            ${uhRenderSleepContent(this._hass, this._prefix)}
-          </div>
-        </div>
-      </ha-card>
-    `;
+    const headerDiv = document.createElement("div");
+    headerDiv.innerHTML = this._renderHeader();
+    while (headerDiv.firstChild) container.appendChild(headerDiv.firstChild);
 
+    const contentDiv = document.createElement("div");
+    contentDiv.id = "contentArea";
+    contentDiv.innerHTML = this._renderContent();
+    container.appendChild(contentDiv);
+
+    root.appendChild(card);
     this._attachRefreshHandler();
+  }
+
+  _renderContent() {
+    const h = this._hass, p = this._prefix;
+    const score = uhGetNumericState(h, p, "sleep_score");
+    const total = uhGetNumericState(h, p, "total_sleep");
+    const efficiency = uhGetNumericState(h, p, "sleep_efficiency");
+    const deep = uhGetNumericState(h, p, "deep_sleep");
+    const rem = uhGetNumericState(h, p, "rem_sleep");
+    const light = uhGetNumericState(h, p, "light_sleep");
+    const restorative = uhGetNumericState(h, p, "restorative_sleep");
+    const rhr = uhGetNumericState(h, p, "resting_heart_rate");
+
+    const noStage = deep == null && rem == null && light == null;
+    const totalMin = noStage ? 0 : (deep || 0) + (rem || 0) + (light || 0);
+    const deepPct = totalMin > 0 ? Math.round((deep || 0) / totalMin * 100) : 0;
+    const remPct = totalMin > 0 ? Math.round((rem || 0) / totalMin * 100) : 0;
+    const lightPct = totalMin > 0 ? Math.round((light || 0) / totalMin * 100) : 0;
+    const awakePct = noStage ? 0 : Math.max(0, 100 - deepPct - remPct - lightPct);
+
+    return [
+      uhMetricRow("SLEEP SCORE", score ?? "--", "", uhGetScoreColorRaw(score), uhGetScoreLabel(score), this._getSparklineHtml("sleep_score", uhGetScoreColorRaw(score))),
+      `<div class="sleep-bar">`,
+      `<div class="bar-seg deep" style="width:${deepPct}%"></div>`,
+      `<div class="bar-seg light" style="width:${lightPct}%"></div>`,
+      `<div class="bar-seg rem" style="width:${remPct}%"></div>`,
+      `<div class="bar-seg awake" style="width:${awakePct}%"></div>`,
+      `</div>`,
+      `<div class="sleep-stages">`,
+      `<span class="stage"><span class="stage-dot deep"></span>Deep ${deepPct}%</span>`,
+      `<span class="stage"><span class="stage-dot light"></span>Light ${lightPct}%</span>`,
+      `<span class="stage"><span class="stage-dot rem"></span>REM ${remPct}%</span>`,
+      `<span class="stage"><span class="stage-dot awake"></span>Awake ${awakePct}%</span>`,
+      `</div>`,
+      `<div class="metric-grid">`,
+      uhMetricRow("TOTAL SLEEP", uhFormatMinutesPlain(total), "", "", score === null ? "" : score >= 70 ? "Optimal" : score >= 50 ? "Good" : "Low", this._getSparklineHtml("total_sleep", "var(--uh-text-secondary)")),
+      uhMetricRow("EFFICIENCY", efficiency !== null ? efficiency + "%" : "--", "", "", efficiency === null ? "" : efficiency >= 90 ? "Optimal" : efficiency >= 80 ? "Good" : "Low", this._getSparklineHtml("sleep_efficiency", "var(--uh-text-secondary)")),
+      uhMetricRow("RESTORATIVE", restorative !== null ? restorative + "%" : "--", "", "", restorative === null ? "" : restorative >= 35 ? "Good" : "Needs attention", ""),
+      uhMetricRow("RESTING HR", rhr ?? "--", "bpm", "", "", ""),
+      `</div>`,
+    ].join("");
   }
 
   _updateValues() {
     if (!this.shadowRoot || !this._hass) return;
     const el = this.shadowRoot.getElementById("contentArea");
-    if (el) el.innerHTML = uhRenderSleepContent(this._hass, this._prefix);
-  }
-
-  _getStyles() {
-    return [
-      uhBaseVariables(),
-      uhHaCardBase(),
-      uhRefreshButtonStyles(),
-      uhHeaderStyles(),
-      uhCoreCardStyles(),
-      uhSleepStyles(),
-      uhResponsiveStyles(),
-      `.uh-body { padding: 0 12px 16px 12px; }`,
-    ].join("\n");
+    if (el) el.innerHTML = this._renderContent();
   }
 }
 
 /* ══════════════════════ MOVEMENT CARD ══════════════════════ */
 
 class UltrahumanRingMovementCard extends UltrahumanCardBase {
-  static getConfigElement() {
-    return document.createElement("ultrahuman-ring-movement-card-editor");
-  }
+  static getConfigElement() { return document.createElement("ultrahuman-ring-movement-card-editor"); }
+  static getStubConfig() { return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" }; }
+  getCardSize() { return 3; }
 
-  static getStubConfig() {
-    return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" };
-  }
-
-  getCardSize() {
-    return 3;
-  }
-
-  _getRefreshMetrics() {
-    return ["movement_index", "steps", "vo2_max"];
-  }
+  _getRefreshMetrics() { return ["movement_index", "steps", "vo2_max"]; }
+  _getSparklineEntities() { return ["movement_index", "steps"]; }
 
   _render() {
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
-
-    this.shadowRoot.innerHTML = `
-      <ha-card>
-        <style>${this._getStyles()}</style>
-        <div class="uh-card">
-          ${this._renderCardHeader()}
-          <div class="uh-body" id="contentArea">
-            ${uhRenderMovementContent(this._hass, this._prefix)}
-          </div>
-        </div>
-      </ha-card>
-    `;
-
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const root = this.shadowRoot;
+    root.textContent = "";
+    const card = document.createElement("ha-card");
+    const style = document.createElement("style");
+    style.textContent = uhStyles();
+    card.appendChild(style);
+    const container = document.createElement("div");
+    container.className = "uh-card";
+    card.appendChild(container);
+    const headerDiv = document.createElement("div");
+    headerDiv.innerHTML = this._renderHeader();
+    while (headerDiv.firstChild) container.appendChild(headerDiv.firstChild);
+    const contentDiv = document.createElement("div");
+    contentDiv.id = "contentArea";
+    contentDiv.innerHTML = this._renderContent();
+    container.appendChild(contentDiv);
+    root.appendChild(card);
     this._attachRefreshHandler();
+  }
+
+  _renderContent() {
+    const h = this._hass, p = this._prefix;
+    const score = uhGetNumericState(h, p, "movement_index");
+    const steps = uhGetNumericState(h, p, "steps");
+    const vo2 = uhGetNumericState(h, p, "vo2_max");
+    return [
+      uhMetricRow("MOVEMENT SCORE", score ?? "--", "", uhGetScoreColorRaw(score), uhGetScoreLabel(score), this._getSparklineHtml("movement_index", uhGetScoreColorRaw(score))),
+      `<div class="metric-grid">`,
+      uhMetricRow("STEPS", steps !== null ? Math.round(steps).toLocaleString() : "--", "", "", "", this._getSparklineHtml("steps", "var(--uh-text-secondary)")),
+      uhMetricRow("VO2 MAX", vo2 ?? "--", "mL/kg/min", "", "", ""),
+      `</div>`,
+    ].join("");
   }
 
   _updateValues() {
     if (!this.shadowRoot || !this._hass) return;
     const el = this.shadowRoot.getElementById("contentArea");
-    if (el) el.innerHTML = uhRenderMovementContent(this._hass, this._prefix);
-  }
-
-  _getStyles() {
-    return [
-      uhBaseVariables(),
-      uhHaCardBase(),
-      uhRefreshButtonStyles(),
-      uhHeaderStyles(),
-      uhCoreCardStyles(),
-      uhMovementStyles(),
-      `.uh-body { padding: 0 12px 16px 12px; }`,
-    ].join("\n");
+    if (el) el.innerHTML = this._renderContent();
   }
 }
 
 /* ══════════════════════ RECOVERY CARD ══════════════════════ */
 
 class UltrahumanRingRecoveryCard extends UltrahumanCardBase {
-  static getConfigElement() {
-    return document.createElement("ultrahuman-ring-recovery-card-editor");
-  }
+  static getConfigElement() { return document.createElement("ultrahuman-ring-recovery-card-editor"); }
+  static getStubConfig() { return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" }; }
+  getCardSize() { return 3; }
 
-  static getStubConfig() {
-    return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" };
-  }
-
-  getCardSize() {
-    return 3;
-  }
-
-  _getRefreshMetrics() {
-    return ["recovery_index", "hrv", "resting_heart_rate", "skin_temperature"];
-  }
+  _getRefreshMetrics() { return ["recovery_index", "hrv", "resting_heart_rate", "skin_temperature"]; }
+  _getSparklineEntities() { return ["recovery_index", "hrv", "resting_heart_rate"]; }
 
   _render() {
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
-
-    this.shadowRoot.innerHTML = `
-      <ha-card>
-        <style>${this._getStyles()}</style>
-        <div class="uh-card">
-          ${this._renderCardHeader()}
-          <div class="uh-body" id="contentArea">
-            ${uhRenderRecoveryContent(this._hass, this._prefix)}
-          </div>
-        </div>
-      </ha-card>
-    `;
-
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const root = this.shadowRoot;
+    root.textContent = "";
+    const card = document.createElement("ha-card");
+    const style = document.createElement("style");
+    style.textContent = uhStyles();
+    card.appendChild(style);
+    const container = document.createElement("div");
+    container.className = "uh-card";
+    card.appendChild(container);
+    const headerDiv = document.createElement("div");
+    headerDiv.innerHTML = this._renderHeader();
+    while (headerDiv.firstChild) container.appendChild(headerDiv.firstChild);
+    const contentDiv = document.createElement("div");
+    contentDiv.id = "contentArea";
+    contentDiv.innerHTML = this._renderContent();
+    container.appendChild(contentDiv);
+    root.appendChild(card);
     this._attachRefreshHandler();
+  }
+
+  _renderContent() {
+    const h = this._hass, p = this._prefix;
+    const score = uhGetNumericState(h, p, "recovery_index");
+    const hrv = uhGetNumericState(h, p, "hrv");
+    const rhr = uhGetNumericState(h, p, "resting_heart_rate");
+    const temp = uhGetNumericState(h, p, "skin_temperature");
+    return [
+      uhMetricRow("RECOVERY SCORE", score ?? "--", "", uhGetScoreColorRaw(score), uhGetScoreLabel(score), this._getSparklineHtml("recovery_index", uhGetScoreColorRaw(score))),
+      uhMetricRow("HRV AVERAGE", hrv ?? "--", "ms", "", "", this._getSparklineHtml("hrv", "var(--uh-text-secondary)")),
+      uhMetricRow("RESTING HEART RATE", rhr ?? "--", "bpm", "", "", this._getSparklineHtml("resting_heart_rate", "var(--uh-text-secondary)")),
+      uhMetricRow("SKIN TEMPERATURE", temp !== null ? parseFloat(temp).toFixed(1) : "--", "\u00B0C", "", "", ""),
+    ].join("");
   }
 
   _updateValues() {
     if (!this.shadowRoot || !this._hass) return;
     const el = this.shadowRoot.getElementById("contentArea");
-    if (el) el.innerHTML = uhRenderRecoveryContent(this._hass, this._prefix);
-  }
-
-  _getStyles() {
-    return [
-      uhBaseVariables(),
-      uhHaCardBase(),
-      uhRefreshButtonStyles(),
-      uhHeaderStyles(),
-      uhCoreCardStyles(),
-      uhRecoveryStyles(),
-      `.uh-body { padding: 0 12px 16px 12px; }`,
-    ].join("\n");
+    if (el) el.innerHTML = this._renderContent();
   }
 }
 
 /* ══════════════════════ HEART CARD ══════════════════════ */
 
 class UltrahumanRingHeartCard extends UltrahumanCardBase {
-  static getConfigElement() {
-    return document.createElement("ultrahuman-ring-heart-card-editor");
-  }
+  static getConfigElement() { return document.createElement("ultrahuman-ring-heart-card-editor"); }
+  static getStubConfig() { return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" }; }
+  getCardSize() { return 4; }
 
-  static getStubConfig() {
-    return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" };
-  }
-
-  getCardSize() {
-    return 3;
-  }
-
-  _getRefreshMetrics() {
-    return ["heart_rate", "resting_heart_rate", "hrv", "spo2"];
-  }
+  _getRefreshMetrics() { return ["heart_rate", "resting_heart_rate", "hrv", "spo2"]; }
+  _getSparklineEntities() { return ["heart_rate", "resting_heart_rate", "hrv", "spo2"]; }
 
   _render() {
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
-
-    this.shadowRoot.innerHTML = `
-      <ha-card>
-        <style>${this._getStyles()}</style>
-        <div class="uh-card">
-          ${this._renderCardHeader()}
-          <div class="uh-body" id="contentArea">
-            ${uhRenderHeartContent(this._hass, this._prefix)}
-          </div>
-        </div>
-      </ha-card>
-    `;
-
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const root = this.shadowRoot;
+    root.textContent = "";
+    const card = document.createElement("ha-card");
+    const style = document.createElement("style");
+    style.textContent = uhStyles();
+    card.appendChild(style);
+    const container = document.createElement("div");
+    container.className = "uh-card";
+    card.appendChild(container);
+    const headerDiv = document.createElement("div");
+    headerDiv.innerHTML = this._renderHeader();
+    while (headerDiv.firstChild) container.appendChild(headerDiv.firstChild);
+    const contentDiv = document.createElement("div");
+    contentDiv.id = "contentArea";
+    contentDiv.innerHTML = this._renderContent();
+    container.appendChild(contentDiv);
+    root.appendChild(card);
     this._attachRefreshHandler();
+  }
+
+  _renderContent() {
+    const h = this._hass, p = this._prefix;
+    const hr = uhGetNumericState(h, p, "heart_rate");
+    const rhr = uhGetNumericState(h, p, "resting_heart_rate");
+    const hrv = uhGetNumericState(h, p, "hrv");
+    const spo2 = uhGetNumericState(h, p, "spo2");
+    return [
+      uhMetricRow("HEART RATE", hr ?? "--", "bpm", "", "", this._getSparklineHtml("heart_rate", "#FF4500")),
+      uhMetricRow("RESTING HR", rhr ?? "--", "bpm", "", "", this._getSparklineHtml("resting_heart_rate", "var(--uh-text-secondary)")),
+      uhMetricRow("HRV", hrv ?? "--", "ms", "", "", this._getSparklineHtml("hrv", "#0EFF27")),
+      uhMetricRow("SpO2", spo2 ?? "--", "%", "", "", this._getSparklineHtml("spo2", "var(--uh-text-secondary)")),
+    ].join("");
   }
 
   _updateValues() {
     if (!this.shadowRoot || !this._hass) return;
     const el = this.shadowRoot.getElementById("contentArea");
-    if (el) el.innerHTML = uhRenderHeartContent(this._hass, this._prefix);
-  }
-
-  _getStyles() {
-    return [
-      uhBaseVariables(),
-      uhHaCardBase(),
-      uhRefreshButtonStyles(),
-      uhHeaderStyles(),
-      uhCoreCardStyles(),
-      uhHeartStyles(),
-      uhResponsiveStyles(),
-      `.uh-body { padding: 0 12px 16px 12px; }`,
-    ].join("\n");
+    if (el) el.innerHTML = this._renderContent();
   }
 }
 
 /* ══════════════════════ GLUCOSE CARD ══════════════════════ */
 
 class UltrahumanRingGlucoseCard extends UltrahumanCardBase {
-  static getConfigElement() {
-    return document.createElement("ultrahuman-ring-glucose-card-editor");
-  }
+  static getConfigElement() { return document.createElement("ultrahuman-ring-glucose-card-editor"); }
+  static getStubConfig() { return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" }; }
+  getCardSize() { return 3; }
 
-  static getStubConfig() {
-    return { entity_prefix: "sensor.ultrahuman_ring_your_email_com" };
-  }
-
-  getCardSize() {
-    return 3;
-  }
-
-  _getRefreshMetrics() {
-    return ["metabolic_score", "average_glucose", "glucose_variability", "hba1c", "time_in_target"];
-  }
+  _getRefreshMetrics() { return ["metabolic_score", "average_glucose", "glucose_variability", "hba1c", "time_in_target"]; }
+  _getSparklineEntities() { return ["metabolic_score", "average_glucose"]; }
 
   _render() {
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-    }
-
-    this.shadowRoot.innerHTML = `
-      <ha-card>
-        <style>${this._getStyles()}</style>
-        <div class="uh-card">
-          ${this._renderCardHeader()}
-          <div class="uh-body" id="contentArea">
-            ${uhRenderGlucoseContent(this._hass, this._prefix)}
-          </div>
-        </div>
-      </ha-card>
-    `;
-
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const root = this.shadowRoot;
+    root.textContent = "";
+    const card = document.createElement("ha-card");
+    const style = document.createElement("style");
+    style.textContent = uhStyles();
+    card.appendChild(style);
+    const container = document.createElement("div");
+    container.className = "uh-card";
+    card.appendChild(container);
+    const headerDiv = document.createElement("div");
+    headerDiv.innerHTML = this._renderHeader();
+    while (headerDiv.firstChild) container.appendChild(headerDiv.firstChild);
+    const contentDiv = document.createElement("div");
+    contentDiv.id = "contentArea";
+    contentDiv.innerHTML = this._renderContent();
+    container.appendChild(contentDiv);
+    root.appendChild(card);
     this._attachRefreshHandler();
+  }
+
+  _renderContent() {
+    const h = this._hass, p = this._prefix;
+    const metabolic = uhGetNumericState(h, p, "metabolic_score");
+    const avgGlucose = uhGetNumericState(h, p, "average_glucose");
+    const variability = uhGetNumericState(h, p, "glucose_variability");
+    const hba1c = uhGetNumericState(h, p, "hba1c");
+    const timeInTarget = uhGetNumericState(h, p, "time_in_target");
+
+    const hasData = metabolic != null || avgGlucose != null || variability != null || hba1c != null || timeInTarget != null;
+    if (!hasData) return `<div class="no-data">No glucose data available</div>`;
+
+    const parts = [];
+    if (metabolic !== null) parts.push(uhMetricRow("METABOLIC SCORE", metabolic, "", uhGetScoreColorRaw(metabolic), uhGetScoreLabel(metabolic), this._getSparklineHtml("metabolic_score", uhGetScoreColorRaw(metabolic))));
+    if (avgGlucose !== null) parts.push(uhMetricRow("AVG GLUCOSE", avgGlucose, "mg/dL", "", "", this._getSparklineHtml("average_glucose", "var(--uh-text-secondary)")));
+
+    const gridItems = [];
+    if (variability !== null) gridItems.push(uhMetricRow("VARIABILITY", variability, "%", "", "", ""));
+    if (hba1c !== null) gridItems.push(uhMetricRow("HbA1c", hba1c, "%", "", "", ""));
+    if (timeInTarget !== null) gridItems.push(uhMetricRow("IN TARGET", timeInTarget, "%", "", "", ""));
+    if (gridItems.length > 0) {
+      parts.push(`<div class="metric-grid">${gridItems.join("")}</div>`);
+    }
+    return parts.join("");
   }
 
   _updateValues() {
     if (!this.shadowRoot || !this._hass) return;
     const el = this.shadowRoot.getElementById("contentArea");
-    if (el) el.innerHTML = uhRenderGlucoseContent(this._hass, this._prefix);
-  }
-
-  _getStyles() {
-    return [
-      uhBaseVariables(),
-      uhHaCardBase(),
-      uhRefreshButtonStyles(),
-      uhHeaderStyles(),
-      uhCoreCardStyles(),
-      uhGlucoseStyles(),
-      uhResponsiveStyles(),
-      `.uh-body { padding: 0 12px 16px 12px; }`,
-    ].join("\n");
+    if (el) el.innerHTML = this._renderContent();
   }
 }
 
-/* ══════════════════════ EDITOR BASE ══════════════════════ */
+/* ══════════════════════ EDITOR ══════════════════════ */
 
 class UltrahumanEditorBase extends HTMLElement {
   setConfig(config) {
@@ -1420,38 +1123,53 @@ class UltrahumanEditorBase extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
-    this.shadowRoot.innerHTML = `
-      <style>
-        .editor { padding: 8px 0; }
-        .row { margin-bottom: 16px; }
-        label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 14px; }
-        input {
-          width: 100%; padding: 10px 12px; border: 1px solid var(--divider-color, #ccc);
-          border-radius: 8px; box-sizing: border-box; font-size: 14px;
-          background: var(--card-background-color, #fff); color: var(--primary-text-color, #000);
-        }
-        .hint { font-size: 12px; color: var(--secondary-text-color, #888); margin-top: 6px; line-height: 1.4; }
-      </style>
-      <div class="editor">
-        <div class="row">
-          <label>Entity Prefix</label>
-          <input id="prefix" type="text" value="${this._config.entity_prefix || ""}"
-            placeholder="sensor.ultrahuman_ring_your_email_com"/>
-          <div class="hint">
-            The common prefix for your Ultrahuman sensor entities.<br>
-            Find it in <strong>Developer Tools &rarr; States</strong> by filtering for "ultrahuman".
-          </div>
-        </div>
-      </div>
+    const root = this.shadowRoot;
+    root.textContent = "";
+
+    const style = document.createElement("style");
+    style.textContent = `
+      .editor { padding: 8px 0; }
+      .row { margin-bottom: 16px; }
+      label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 14px; }
+      input {
+        width: 100%; padding: 10px 12px; border: 1px solid var(--divider-color, #ccc);
+        border-radius: 8px; box-sizing: border-box; font-size: 14px;
+        background: var(--card-background-color, #fff); color: var(--primary-text-color, #000);
+      }
+      .hint { font-size: 12px; color: var(--secondary-text-color, #888); margin-top: 6px; line-height: 1.4; }
     `;
-    this.shadowRoot.getElementById("prefix").addEventListener("input", (e) => {
+    root.appendChild(style);
+
+    const editor = document.createElement("div");
+    editor.className = "editor";
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const label = document.createElement("label");
+    label.textContent = "Entity Prefix";
+    row.appendChild(label);
+
+    const input = document.createElement("input");
+    input.id = "prefix";
+    input.type = "text";
+    input.value = this._config.entity_prefix || "";
+    input.placeholder = "sensor.ultrahuman_ring_your_email_com";
+    input.addEventListener("input", (e) => {
       this._config = { ...this._config, entity_prefix: e.target.value };
       this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true }));
     });
+    row.appendChild(input);
+
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "The common prefix for your Ultrahuman sensor entities. Find it in Developer Tools \u2192 States by filtering for \"ultrahuman\".";
+    row.appendChild(hint);
+
+    editor.appendChild(row);
+    root.appendChild(editor);
   }
 }
 
-/* Editor subclasses (one-liners) */
 class UltrahumanRingCardEditor extends UltrahumanEditorBase {}
 class UltrahumanRingOverviewCardEditor extends UltrahumanEditorBase {}
 class UltrahumanRingSleepCardEditor extends UltrahumanEditorBase {}
@@ -1460,7 +1178,7 @@ class UltrahumanRingRecoveryCardEditor extends UltrahumanEditorBase {}
 class UltrahumanRingHeartCardEditor extends UltrahumanEditorBase {}
 class UltrahumanRingGlucoseCardEditor extends UltrahumanEditorBase {}
 
-/* ══════════════════════ REGISTER ELEMENTS ══════════════════════ */
+/* ══════════════════════ REGISTER ══════════════════════ */
 
 customElements.define("ultrahuman-ring-card", UltrahumanRingCard);
 customElements.define("ultrahuman-ring-card-editor", UltrahumanRingCardEditor);
@@ -1479,55 +1197,13 @@ customElements.define("ultrahuman-ring-glucose-card-editor", UltrahumanRingGluco
 
 window.customCards = window.customCards || [];
 window.customCards.push(
-  {
-    type: "ultrahuman-ring-card",
-    name: "Ultrahuman Ring Card",
-    description: "All-in-one dashboard with ring SVG, snapshot, sleep, movement, recovery, heart & glucose",
-    preview: true,
-    documentationURL: "https://github.com/tanujdargan/ultrahuman-ha",
-  },
-  {
-    type: "ultrahuman-ring-overview-card",
-    name: "Ultrahuman Overview",
-    description: "Ring SVG hero with score arcs and snapshot pills",
-    preview: true,
-    documentationURL: "https://github.com/tanujdargan/ultrahuman-ha",
-  },
-  {
-    type: "ultrahuman-ring-sleep-card",
-    name: "Ultrahuman Sleep",
-    description: "Sleep score, stage breakdown bar, and contributor tiles",
-    preview: true,
-    documentationURL: "https://github.com/tanujdargan/ultrahuman-ha",
-  },
-  {
-    type: "ultrahuman-ring-movement-card",
-    name: "Ultrahuman Movement",
-    description: "Movement score with steps and VO2 max",
-    preview: true,
-    documentationURL: "https://github.com/tanujdargan/ultrahuman-ha",
-  },
-  {
-    type: "ultrahuman-ring-recovery-card",
-    name: "Ultrahuman Recovery",
-    description: "Recovery score with HRV, resting HR, and skin temperature",
-    preview: true,
-    documentationURL: "https://github.com/tanujdargan/ultrahuman-ha",
-  },
-  {
-    type: "ultrahuman-ring-heart-card",
-    name: "Ultrahuman Heart",
-    description: "2x2 grid of heart rate, resting HR, HRV, and SpO2",
-    preview: true,
-    documentationURL: "https://github.com/tanujdargan/ultrahuman-ha",
-  },
-  {
-    type: "ultrahuman-ring-glucose-card",
-    name: "Ultrahuman Glucose",
-    description: "Metabolic score with glucose metrics",
-    preview: true,
-    documentationURL: "https://github.com/tanujdargan/ultrahuman-ha",
-  },
+  { type: "ultrahuman-ring-card", name: "Ultrahuman Ring Card", description: "All-in-one compact dashboard with sparkline graphs", preview: true, documentationURL: "https://github.com/tanujdargan/ultrahuman-ha" },
+  { type: "ultrahuman-ring-overview-card", name: "Ultrahuman Overview", description: "Ring SVG hero with score arcs and snapshot pills", preview: true, documentationURL: "https://github.com/tanujdargan/ultrahuman-ha" },
+  { type: "ultrahuman-ring-sleep-card", name: "Ultrahuman Sleep", description: "Sleep score with stage bar, contributors, and sparklines", preview: true, documentationURL: "https://github.com/tanujdargan/ultrahuman-ha" },
+  { type: "ultrahuman-ring-movement-card", name: "Ultrahuman Movement", description: "Movement score with steps, VO2 max, and sparklines", preview: true, documentationURL: "https://github.com/tanujdargan/ultrahuman-ha" },
+  { type: "ultrahuman-ring-recovery-card", name: "Ultrahuman Recovery", description: "Recovery score with HRV, RHR, temp, and sparklines", preview: true, documentationURL: "https://github.com/tanujdargan/ultrahuman-ha" },
+  { type: "ultrahuman-ring-heart-card", name: "Ultrahuman Heart", description: "Heart metrics with sparkline trends", preview: true, documentationURL: "https://github.com/tanujdargan/ultrahuman-ha" },
+  { type: "ultrahuman-ring-glucose-card", name: "Ultrahuman Glucose", description: "Metabolic score with glucose metrics and sparklines", preview: true, documentationURL: "https://github.com/tanujdargan/ultrahuman-ha" },
 );
 
 console.info(
