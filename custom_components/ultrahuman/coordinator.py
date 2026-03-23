@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -15,11 +16,10 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class UltrahumanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator that fetches data from Ultrahuman API on demand.
+    """Coordinator that fetches data from the Ultrahuman API.
 
-    No automatic polling interval is set - data is only fetched when
-    the user explicitly requests an update via the homeassistant.update_entity
-    service or the UI refresh button.
+    Automatically polls every hour and also supports manual refresh via
+    the homeassistant.update_entity service or the UI refresh button.
     """
 
     def __init__(
@@ -32,16 +32,12 @@ class UltrahumanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            # No update_interval - only fetch when explicitly requested
-            update_interval=None,
+            update_interval=timedelta(hours=1),
         )
         self.client = client
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from the Ultrahuman API.
-
-        This is called when the user requests a manual update.
-        """
+        """Fetch data from the Ultrahuman API."""
         try:
             response = await self.client.async_get_metrics()
         except UltrahumanAuthError as err:
